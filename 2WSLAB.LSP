@@ -63,7 +63,6 @@
 )
 
 (defun 2w:rect-info (ent / obj lo hi mn mx endp i p x y mask ok)
-  ;; Accept only four-corner, axis-aligned, closed rectangular polylines.
   (if (not (2w:closed-poly-p ent))
     nil
     (progn
@@ -108,7 +107,6 @@
 )
 
 (defun 2w:edge-beam-p (edge x0 y0 x1 y1 boxes tol / b hit)
-  ;; A selected support must lie on/near the named slab edge and span >= half it.
   (setq hit nil)
   (foreach b boxes
     (cond
@@ -164,16 +162,17 @@
            (setq n (1+ (fix (/ span-mm spacing)))))
   )
   (setq area (* (/ (* pi dia dia) 4.0) (/ 1000.0 spacing)))
-  (setq req (getreal (strcat "\nEngineer-supplied required As for " direction " (mm2/m; Enter to skip): ")))
-  (if (and req (> req 0.0) (< area req))
-    (princ (strcat "\nWARNING: selected steel provides " (rtos area 2 1) " mm2/m, below entered required " (rtos req 2 1) " mm2/m.")))
-  (if (or (null req) (<= req 0.0) (>= area req))
-    (princ (strcat "\n" direction ": As,provided = " (rtos area 2 1) " mm2/m; " (itoa n) " indicative bars; spacing " (rtos spacing 2 1) " mm.")))
+  (if (wcmatch (strcase direction) "BOTTOM*")
+    (progn
+      (setq req (getreal (strcat "\nEngineer-supplied required As for " direction " (mm2/m; Enter to skip): ")))
+      (if (and req (> req 0.0) (< area req))
+        (princ (strcat "\nWARNING: selected steel provides " (rtos area 2 1) " mm2/m, below entered required " (rtos req 2 1) " mm2/m.")))
+      (if (or (null req) (<= req 0.0) (>= area req))
+        (princ (strcat "\n" direction ": As,provided = " (rtos area 2 1) " mm2/m; " (itoa n) " indicative bars; spacing " (rtos spacing 2 1) " mm.")))))
   (list dia spacing n area)
 )
 
 (defun 2w:draw-rep (x0 y0 x1 y1 mmfactor cover-dwg shortx bottomS bottomL crankS crankL layerbot layercr layertext / y x dx dy)
-  ;; Clean representative line, with end range ticks and ratio ticks; not a bar schedule/grid.
   (if shortx
     (progn
       (setq y (/ (+ y0 y1) 2.0) dx (* 0.42 (- x1 x0)))
@@ -203,9 +202,9 @@
 
 (defun c:2WSLAB (/ *error* olderr unit factor main x0 y0 x1 y1 sx sy shortx
                    supportss supportboxes openingss openingboxes cantss cantboxes
-                   ask choice edge modes beam tol cutoffS cutoffL covermm cover
+                   ask choice edge modes beam tol cutoffS covermm cover
                    bottomS bottomL crankS crankL topbar cantmain cantdist
-                   mmx mmy ht y x b dia sp cantRatio point)
+                   cantRatio ht y x b modes2)
   (setq olderr *error* *error* 2w:error)
   (setq *2w-old-osmode* (getvar "OSMODE") *2w-old-clayer* (getvar "CLAYER"))
   (setvar "OSMODE" 0)
@@ -218,7 +217,7 @@
   (if (null main) (progn (princ "\nCancelled.") (2w:restore-vars) (setq *error* olderr) (princ) (exit)))
   (setq x0 (cadr main) y0 (caddr main) x1 (cadddr main) y1 (car (cddddr main)))
   (setq sx (- x1 x0) sy (- y1 y0) shortx (<= sx sy))
-  (if (or (<= sx 0.0) (<= sy 0.0)) (progn (princ "\nInvalid slab extents.") (exit)))
+  (if (or (<= sx 0.0) (<= sy 0.0)) (progn (princ "\nInvalid slab extents.") (2w:restore-vars) (setq *error* olderr) (princ) (exit)))
   (princ "\nSelect supporting beam LINE/POLYLINE entities, then press Enter.")
   (setq supportss (ssget ":L" '((0 . "LINE,LWPOLYLINE,POLYLINE"))))
   (setq supportboxes (if supportss (2w:ss-bbox supportss) nil))
@@ -247,32 +246,32 @@
   (setq crankS (2w:get-bar-set "Cranked short-direction" (* (min sx sy) factor)))
   (setq crankL (2w:get-bar-set "Cranked long-direction" (* (max sx sy) factor)))
   (setq topbar (2w:get-bar-set "Double-top extra" (* (max sx sy) factor)))
-  (if (and cantboxes (initget "1.5L 2.0L") (setq cantRatio (getkword "\nCantilever back-span anchorage [1.5L/2.0L] <1.5L>: ")))
-    (if (= cantRatio "2.0L") (setq cantRatio 2.0) (setq cantRatio 1.5))
-    (setq cantRatio 1.5))
   (if cantboxes
-    (progn (setq cantmain (2w:get-bar-set "Cantilever top main" (* (max sx sy) factor)))
-           (setq cantdist (2w:get-bar-set "Cantilever distribution" (* (min sx sy) factor)))))
-  (setq ask (2w:yesno "Place corner torsion mat callouts at discontinuous corners?" "No"))
+    (progn
+      (initget "1.5L 2.0L")
+      (setq askCant (getkword "\nCantilever back-span anchorage [1.5L/2.0L] <1.5L>: "))
+      (setq cantRatio (if (= askCant "2.0L") 2.0 1.5))
+      (setq cantmain (2w:get-bar-set "Cantilever top main" (* (max sx sy) factor)))
+      (setq cantdist (2w:get-bar-set "Cantilever distribution" (* (min sx sy) factor)))
+      )
+    (setq cantRatio 1.5))
+  (setq askCorner (2w:yesno "Place corner torsion mat callouts at discontinuous corners?" "No"))
 
-  ;; Create requested ACI color-index layers (ACI colors only; drawing units remain unchanged).
   (2w:layer "REBAR-BOT" 4) (2w:layer "REBAR-CRANK" 3)
   (2w:layer "REBAR-TOP-EXTRA" 1) (2w:layer "REBAR-CANTILEVER" 5)
   (2w:layer "REBAR-CORNER" 6) (2w:layer "REBAR-TRIMMER" 30)
   (2w:layer "REBAR-DIM" 8) (2w:layer "REBAR-TEXT" 2)
 
-  ;; Representative ranges rather than full bar grids. Openings and projection geometry
-  ;; are retained as selections for review; they are not automatically clipped/trimmed.
   (2w:draw-rep x0 y0 x1 y1 factor cover shortx bottomS bottomL crankS crankL "REBAR-BOT" "REBAR-CRANK" "REBAR-TEXT")
   (setq ht (* 0.025 (min sx sy)))
   (2w:text (list x0 (+ y0 (* 0.10 sy)) 0.0) ht
-    (strcat "PRELIMINARY ONLY - verify design/development/spacing. Cover " (rtos covermm 2 1) " mm (" (rtos cover 2 3) " drawing units).") "REBAR-TEXT")
+    (strcat "PRELIMINARY ONLY - verify design/development/spacing. Cover " (rtos covermm 2 3) " inches.") "REBAR-TEXT")
   (foreach edge '("Bottom" "Top" "Left" "Right")
     (setq beam (2w:edge-beam-p edge x0 y0 x1 y1 supportboxes tol))
     (if beam
       (progn
-        (setq modes (assoc edge modes))
-        (setq cutoffS (2w:cut-ratio edge (if modes (cdr modes) "Discontinuous") choice))
+        (setq modes2 (assoc edge modes))
+        (setq cutoffS (2w:cut-ratio edge (if modes2 (cdr modes2) "Discontinuous") choice))
         (if (member edge '("Bottom" "Top"))
           (progn
             (setq x (if (= edge "Bottom") (+ x0 (* cutoffS sx)) (- x1 (* cutoffS sx))))
@@ -283,7 +282,7 @@
             (setq y (if (= edge "Left") (+ y0 (* cutoffS sy)) (- y1 (* cutoffS sy))))
             (2w:line (list x0 y 0.0) (list x1 y 0.0) "REBAR-CRANK")
             (2w:arrow-tick (list (/ (+ x0 x1) 2.0) y 0.0) 0.707 0.707 (* 0.04 sx) "REBAR-CRANK")
-            (2w:dim (list x0 (if (= edge "Left") y0 y1) 0.0) (list x0 y 0.0) (list (- x0 (* 0.12 sx)) y 0.0))))))
+            (2w:dim (list x0 (if (= edge "Left") y0 y1) 0.0) (list x0 y 0.0) (list (- x0 (* 0.12 sx)) y 0.0)))))))
   (if openingboxes
     (foreach b openingboxes
       (2w:text (list (car b) (cadddr b) 0.0) ht "OPENING SELECTED - bars/trimmers require manual detailing" "REBAR-TEXT")))
@@ -291,7 +290,7 @@
     (foreach b cantboxes
       (2w:text (list (car b) (cadddr b) 0.0) ht
         (strcat "CANTILEVER SELECTED - verify development length; requested multiplier " (rtos cantRatio 2 1) "L") "REBAR-TEXT")))
-  (if (= ask "Yes")
+  (if (= askCorner "Yes")
     (2w:text (list x0 (+ y0 (* 0.06 sy)) 0.0) ht "CORNER REINF. %%c10 @ 150mm c/c TOP & BOT - ENGINEER TO VERIFY" "REBAR-CORNER"))
   (princ "\n2WSLAB finished. Review all geometry and design with a qualified structural engineer.")
   (2w:restore-vars)
@@ -299,5 +298,5 @@
   (princ)
 )
 
-(princ "\n2WSLAB loaded. Type 2WSLAB to run. Use ASCII-compatible .LSP source; %%c creates diameter symbol.")
+(princ "\n2WSLAB loaded. Type 2WSLAB to run.")
 (princ)
